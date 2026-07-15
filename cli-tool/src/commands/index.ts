@@ -8,6 +8,9 @@ import { execSyncSafe, runShell, CODE_RUNNERS } from "../tools/exec.js";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { CONFIG } from "../config.js";
+import type { ProviderRegistry } from "../providers/registry.js";
+import type { Provider, ProviderId } from "../providers/types.js";
+import { OllamaProvider } from "../providers/ollama.js";
 
 export interface CommandContext {
   client: OllamaClient;
@@ -16,6 +19,9 @@ export interface CommandContext {
   setModel: (tag: string) => void;
   clearScreen: () => void;
   exit: () => void;
+  registry: ProviderRegistry;
+  getActiveProvider: () => Provider;
+  setActiveProvider: (id: ProviderId) => Promise<void>;
 }
 
 export interface SlashCommand {
@@ -46,47 +52,156 @@ export const commands: SlashCommand[] = [
   },
 
   {
-    name: "model",
-    aliases: ["m"],
-    description: "Show or switch the active model",
-    usage: "/model [tag]   (e.g. /model glm4:9b)",
+    name: "provider",
+    aliases: ["p", "providers"],
+    description: "List / switch AI providers (Z.ai, Ollama, OpenRouter, Google, Groq, HF)",
+    usage: "/provider [id]   (e.g. /provider zai)",
     async run(args, ctx) {
+      // List mode
       if (args.length === 0) {
-        console.log(chalk.cyan.bold("\n🤖 Available Models\n"));
-        const installed = await ctx.client.listInstalled();
-        const installedTags = new Set(installed.map((m) => m.tag));
-        for (const m of MODELS) {
-          const isCurrent = m.tag === ctx.client.model;
-          const isInstalled = installedTags.has(m.tag);
-          const marker = isCurrent ? chalk.green("→") : " ";
-          const status = isInstalled ? chalk.green("✓ installed") : chalk.gray("○ not pulled");
+        console.log(chalk.cyan.bold("\n🔌 AI Providers\n"));
+        const providers = ctx.registry.list();
+        for (const p of providers) {
+          const isActive = p.id === ctx.getActiveProvider().id;
+          const marker = isActive ? chalk.green("→ ") : "  ";
+          const statusIcon = p.available
+            ? chalk.green("✓")
+            : chalk.gray("○");
+          const tag = p.requiresApiKey
+            ? chalk.yellow("[API key]")
+            : p.requiresDownload
+              ? chalk.blue("[Download]")
+              : chalk.green("[Zero-setup]");
           console.log(
-            `  ${marker} ${chalk.white.bold(m.name.padEnd(28))} ${chalk.gray(m.tag.padEnd(28))} ${status}`,
+            `${marker}${statusIcon} ${chalk.white.bold(p.name.padEnd(36))} ${tag}`,
           );
           console.log(
+            chalk.gray(`      ${p.tagline}`),
+          );
+          if (!p.available && p.unavailableReason) {
+            console.log(chalk.red(`      ⚠ ${p.unavailableReason}`));
+          }
+          console.log(
             chalk.gray(
-              `      ${m.description} (${m.size}, ${m.ram} RAM)`,
+              `      Models: ${p.models.length} • Default: ${p.defaultModel}`,
             ),
           );
         }
-        console.log(chalk.gray("\nPull a model with:  /pull <tag>   (e.g. /pull glm4:9b)"));
-        console.log(chalk.gray(`Current: ${chalk.white(ctx.client.model)}\n`));
+        console.log(chalk.gray("\nSwitch with:  /provider <id>   (e.g. /provider zai)"));
+        console.log(chalk.gray("Set API key:  /apikey <provider> <key>\n"));
         return;
       }
-      const tag = args[0];
-      const found = MODELS.find((m) => m.tag === tag);
+
+      // Switch mode
+      const id = args[0] as ProviderId;
+      const validIds: ProviderId[] = ["zai", "ollama", "openrouter", "google", "huggingface", "groq"];
+      if (!validIds.includes(id)) {
+        console.log(chalk.red(`Unknown provider: ${id}`));
+        console.log(chalk.gray(`Valid: ${validIds.join(", ")}`));
+        return;
+      }
+      try {
+        await ctx.setActiveProvider(id);
+        const p = ctx.getActiveProvider();
+        console.log(chalk.green(`✓ Switched to ${p.name}`));
+        console.log(chalk.gray(`  Model: ${p.model}`));
+        if (!p.available) {
+          console.log(chalk.yellow(`  ⚠ Provider not ready: ${p.unavailableReason}`));
+        }
+        console.log();
+      } catch (e) {
+        console.log(chalk.red(`✗ ${(e as Error).message}\n`));
+      }
+    },
+  },
+
+  {
+    name: "apikey",
+    aliases: ["key"],
+    description: "Set API key for a cloud provider (OpenRouter, Google, Groq, HF)",
+    usage: "/apikey <provider> <key>   (e.g. /apikey openrouter sk-or-...)",
+    async run(args, ctx) {
+      if (args.length < 2) {
+        console.log(chalk.red("Usage: /apikey <provider> <key>"));
+        console.log(chalk.gray("Providers needing keys: openrouter, google, groq, huggingface"));
+        console.log(chalk.gray("\nGet keys at:"));
+        console.log(chalk.cyan("  OpenRouter:  https://openrouter.ai/keys"));
+        console.log(chalk.cyan("  Google:      https://aistudio.google.com/app/apikey"));
+        console.log(chalk.cyan("  Groq:        https://console.groq.com/keys"));
+        console.log(chalk.cyan("  HuggingFace: https://huggingface.co/settings/tokens"));
+        console.log();
+        return;
+      }
+      const id = args[0] as ProviderId;
+      const key = args.slice(1).join(" ").trim();
+      try {
+        ctx.registry.setApiKey(id, key);
+        const p = ctx.registry.get(id)!;
+        const ok = await p.ping();
+        if (ok) {
+          console.log(chalk.green(`✓ API key set for ${p.name}`));
+          console.log(chalk.gray(`  You can now switch with: /provider ${id}\n`));
+        } else {
+          console.log(chalk.yellow(`⚠ Key stored but provider still unavailable:`));
+          console.log(chalk.gray(`  ${p.unavailableReason}\n`));
+        }
+      } catch (e) {
+        console.log(chalk.red(`✗ ${(e as Error).message}\n`));
+      }
+    },
+  },
+
+  {
+    name: "model",
+    aliases: ["m"],
+    description: "Show or switch the active model (uses active provider)",
+    usage: "/model [id]   (e.g. /model glm-4.6)",
+    async run(args, ctx) {
+      const provider = ctx.getActiveProvider();
+
+      if (args.length === 0) {
+        console.log(chalk.cyan.bold(`\n🤖 Models — ${provider.name}\n`));
+        console.log(chalk.gray(`Provider: ${provider.id} • ${provider.tagline}\n`));
+
+        // For Ollama, show which are installed locally
+        let installedIds = new Set<string>();
+        if (provider instanceof OllamaProvider) {
+          const installed = await provider.listInstalled();
+          installedIds = new Set(installed.map((m) => m.id));
+        }
+
+        for (const m of provider.models) {
+          const isCurrent = m.id === provider.model;
+          const marker = isCurrent ? chalk.green("→ ") : "  ";
+          const status =
+            provider.requiresDownload && !provider.requiresApiKey
+              ? (installedIds.has(m.id) ? chalk.green("✓ installed") : chalk.gray("○ pull needed"))
+              : m.pricing === "free"
+                ? chalk.green("✓ free")
+                : chalk.yellow("freemium");
+          console.log(
+            `${marker}${chalk.white.bold(m.name.padEnd(36))} ${status}`,
+          );
+          console.log(chalk.gray(`      id: ${m.id}`));
+          if (m.description) console.log(chalk.gray(`      ${m.description}`));
+        }
+        if (provider.requiresDownload) {
+          console.log(chalk.gray(`\nPull with:  /pull <id>   (e.g. /pull ${provider.defaultModel})`));
+        }
+        console.log(chalk.gray(`Current: ${chalk.white(provider.model)}\n`));
+        return;
+      }
+
+      const id = args[0];
+      const found = provider.models.find((m) => m.id === id);
       if (!found) {
-        console.log(chalk.red(`Unknown model: ${tag}`));
-        console.log(chalk.gray("Use /model to see available models."));
+        console.log(chalk.red(`Unknown model: ${id}`));
+        console.log(chalk.gray(`Available: ${provider.models.map((m) => m.id).join(", ")}`));
         return;
       }
-      const installed = await ctx.client.listInstalled();
-      if (!installed.some((m) => m.tag === tag)) {
-        console.log(chalk.yellow(`Model ${tag} is not installed. Run: /pull ${tag}`));
-        return;
-      }
-      ctx.setModel(tag);
-      console.log(chalk.green(`✓ Switched to ${found.name} (${tag})\n`));
+      provider.model = id;
+      console.log(chalk.green(`✓ Switched to ${found.name} (${id})`));
+      console.log(chalk.gray(`  Provider: ${provider.name}\n`));
     },
   },
 

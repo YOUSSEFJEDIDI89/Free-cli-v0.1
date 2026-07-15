@@ -102,6 +102,14 @@ export const CONFIG = {
   temperature: 0.7,
   /** Context window - last N messages kept */
   contextWindow: 20,
+  /** Default provider id */
+  defaultProvider: (process.env.FREE_CLI_PROVIDER ?? "zai") as
+    | "zai"
+    | "ollama"
+    | "openrouter"
+    | "google"
+    | "huggingface"
+    | "groq",
 } as const;
 
 export type Config = typeof CONFIG;

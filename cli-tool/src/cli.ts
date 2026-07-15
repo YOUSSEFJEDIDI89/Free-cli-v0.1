@@ -6,13 +6,16 @@ import { CONFIG } from "./config.js";
 import { findCommand, commands, type CommandContext } from "./commands/index.js";
 import { renderMarkdown } from "./markdown.js";
 import { execSyncSafe } from "./tools/exec.js";
+import { ProviderRegistry, registry as defaultRegistry } from "./providers/registry.js";
+import type { Provider, ProviderId } from "./providers/types.js";
+import { OllamaProvider } from "./providers/ollama.js";
 
 const BANNER = `
   ${chalk.magenta.bold("███████╗███████╗")}
   ${chalk.magenta.bold("██╔════╝██╔════╝")}
-  ${chalk.magenta.bold("█████╗  ███████╗")}   ${chalk.cyan("Free CLI")} ${chalk.gray("v1.0.0")}
-  ${chalk.magenta.bold("██╔══╝  ╚════██║")}   ${chalk.gray("100% local • no API • no credit card")}
-  ${chalk.magenta.bold("███████╗███████║")}   ${chalk.gray("Powered by Ollama + GLM-4-9B")}
+  ${chalk.magenta.bold("█████╗  ███████╗")}   ${chalk.cyan("Free CLI")} ${chalk.gray("v2.0.0")}
+  ${chalk.magenta.bold("██╔══╝  ╚════██║")}   ${chalk.gray("Multi-provider • Z.ai + Ollama + OpenRouter + Gemini + Groq")}
+  ${chalk.magenta.bold("███████╗███████║")}   ${chalk.gray("100% free • zero-setup cloud or local")}
   ${chalk.magenta.bold("╚══════╝╚══════╝")}
 `;
 
@@ -24,35 +27,14 @@ export class CLI {
   private sessions: SessionStore;
   private sessionId: string;
   private history: string[] = [];
-  private historyIndex = -1;
   private pendingSessionSwitch: string | null = null;
+  private registry: ProviderRegistry;
 
   constructor(model?: string) {
     this.client = new OllamaClient(model);
     this.sessions = new SessionStore();
-    this.sessionId = this.sessions.create(this.client.model);
-    // readline is created in start() after async setup, to avoid missing
-    // 'line' events that fire before handlers are registered.
-  }
-
-  /** Create the readline interface and register handlers. */
-  private initReadline(): void {
-    this.rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      prompt: PROMPT,
-      completer: this.completer,
-      terminal: process.stdin.isTTY,
-    });
-
-    // Persist input history
-    this.rl.on("history", (line: string) => {
-      const typed = String(line);
-      if (typed.trim()) {
-        this.history.push(typed);
-        if (this.history.length > 200) this.history.shift();
-      }
-    });
+    this.sessionId = this.sessions.create("zai/glm-4.6");
+    this.registry = defaultRegistry;
   }
 
   /** Tab-completion for slash commands. */
@@ -67,48 +49,59 @@ export class CLI {
     return [[], line];
   };
 
+  /** Create the readline interface and register handlers. */
+  private initReadline(): void {
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      prompt: PROMPT,
+      completer: this.completer,
+      terminal: process.stdin.isTTY,
+    });
+
+    this.rl.on("history", (line: string) => {
+      const typed = String(line);
+      if (typed.trim()) {
+        this.history.push(typed);
+        if (this.history.length > 200) this.history.shift();
+      }
+    });
+  }
+
   async start(): Promise<void> {
     console.log(BANNER);
 
-    // Verify Ollama is reachable
-    const ok = await this.client.ping();
-    if (!ok) {
-      console.log(chalk.red.bold("✗ Cannot reach Ollama daemon!"));
-      console.log(chalk.gray("\nPlease install and start Ollama:"));
-      console.log(chalk.cyan("  curl -fsSL https://ollama.com/install.sh | sh"));
-      console.log(chalk.cyan("  ollama serve"));
-      console.log(chalk.gray("\nThen pull a model:"));
-      console.log(chalk.cyan("  ollama pull glm4:9b"));
-      console.log();
-      process.exit(1);
-    }
+    // Auto-detect first available provider (Z.ai first, then Ollama, etc.)
+    console.log(chalk.gray("Detecting available providers...\n"));
+    const provider = await this.registry.findFirstAvailable();
 
-    // Check that the default model is installed
-    const installed = await this.client.listInstalled();
-    if (installed.length === 0) {
-      console.log(chalk.yellow("⚠ No models installed yet."));
-      console.log(chalk.gray(`\nPull the default model with:`));
-      console.log(chalk.cyan("  /pull glm4:9b"));
-      console.log(chalk.gray(`\nOr pull a smaller model if you have limited RAM:`));
-      console.log(chalk.cyan("  /pull phi3:mini"));
-      console.log();
-    } else if (!installed.some((m) => m.tag === this.client.model)) {
-      // Default to the first installed model
-      this.client.model = installed[0].tag;
-      console.log(chalk.gray(`Using installed model: ${chalk.white(installed[0].tag)}\n`));
+    if (!provider) {
+      console.log(chalk.yellow.bold("⚠ No providers are ready yet.\n"));
+      console.log(chalk.gray("Quick setup options:\n"));
+      console.log(chalk.white("  1. ") + chalk.cyan("Use Z.ai (zero-setup cloud)") + chalk.gray(" — default, should work"));
+      console.log(chalk.white("  2. ") + chalk.cyan("Install Ollama") + chalk.gray(" — for fully local use"));
+      console.log(chalk.cyan("     curl -fsSL https://ollama.com/install.sh | sh && ollama serve"));
+      console.log(chalk.white("  3. ") + chalk.cyan("Add an API key") + chalk.gray(" — free at OpenRouter/Google/Groq"));
+      console.log(chalk.cyan("     /apikey openrouter <key>   (get one at https://openrouter.ai/keys)"));
+      console.log("");
+      console.log(chalk.gray("Type /provider to see all options, or /help for all commands.\n"));
     } else {
-      console.log(chalk.gray(`Ready. Model: ${chalk.white(this.client.model)}\n`));
+      const category =
+        provider.category === "local"
+          ? "local (no internet)"
+          : provider.category === "cloud-sdk"
+            ? "cloud (no API key)"
+            : "cloud (API key)";
+      console.log(
+        chalk.green(`✓ Active: ${chalk.white(provider.name)} `) +
+          chalk.gray(`[${category}] • model: ${provider.model}`),
+      );
+      console.log(chalk.gray(`  ${provider.tagline}\n`));
+      console.log(chalk.gray(`Type ${chalk.white("/help")} for commands, ${chalk.white("/provider")} to switch.\n`));
     }
 
-    console.log(chalk.gray(`Type ${chalk.white("/help")} for commands, or just start chatting.\n`));
-
-    // Now that async setup is done, create the readline interface.
-    // This ensures 'line' events aren't missed.
     this.initReadline();
 
-    // Sequential command processor. Lines are queued and processed one at a
-    // time. After processing, in TTY mode we re-display the prompt; in piped
-    // mode we just wait for the next line or EOF.
     const queue: string[] = [];
     let processing = false;
     let stdinClosed = false;
@@ -138,11 +131,9 @@ export class CLI {
         processing = false;
       }
 
-      // If stdin is closed and queue is empty, exit
       if (stdinClosed && queue.length === 0) {
         process.exit(0);
       }
-      // Re-prompt in TTY mode
       if (process.stdin.isTTY && !stdinClosed) {
         this.rl.prompt();
       }
@@ -155,22 +146,19 @@ export class CLI {
 
     this.rl.on("close", () => {
       stdinClosed = true;
-      // If processing is done and queue is empty, exit immediately
       if (!processing && queue.length === 0) {
         if (process.stdin.isTTY) {
           console.log(chalk.gray("\nGoodbye! 👋"));
         }
         process.exit(0);
       }
-      // Otherwise, processQueue will handle the exit when done
     });
 
-    // Initial prompt (TTY mode only)
     if (process.stdin.isTTY) {
       this.rl.prompt();
     }
 
-    // Ctrl+C handler: first press clears input, second exits
+    // Ctrl+C handler
     let ctrlCCount = 0;
     let ctrlCTimer: NodeJS.Timeout | null = null;
     this.rl.on("SIGINT", () => {
@@ -213,11 +201,23 @@ export class CLI {
         this.rl.close();
         process.exit(0);
       },
+      registry: this.registry,
+      getActiveProvider: () => this.registry.active,
+      setActiveProvider: async (id: ProviderId) => {
+        const p = this.registry.get(id);
+        if (!p) throw new Error(`Unknown provider: ${id}`);
+        if (!p.available) {
+          const ok = await p.ping();
+          if (!ok) {
+            throw new Error(p.unavailableReason ?? `Provider ${id} not available`);
+          }
+        }
+        this.registry.switch(id);
+      },
     };
 
     try {
       await cmd.run(args, ctx);
-      // Pick up session switches
       if ((ctx as any)._newSessionId) {
         this.pendingSessionSwitch = (ctx as any)._newSessionId;
       }
@@ -227,6 +227,15 @@ export class CLI {
   }
 
   private async handleChat(input: string): Promise<void> {
+    const provider = this.registry.active;
+
+    if (!provider.available) {
+      console.log(chalk.red(`✗ Active provider "${provider.name}" is not ready.`));
+      console.log(chalk.gray(`  ${provider.unavailableReason ?? "Unknown reason"}`));
+      console.log(chalk.gray(`  Switch with: /provider`));
+      return;
+    }
+
     // Persist the user message
     this.sessions.append(this.sessionId, {
       role: "user",
@@ -238,7 +247,7 @@ export class CLI {
     const session = this.sessions.load(this.sessionId);
     if (!session) {
       console.log(chalk.red("Session lost. Starting a new one."));
-      this.sessionId = this.sessions.create(this.client.model);
+      this.sessionId = this.sessions.create(provider.id + "/" + provider.model);
       return;
     }
 
@@ -246,24 +255,23 @@ export class CLI {
       { role: "system", content: CONFIG.systemPrompt },
     ];
 
-    // Keep the last N messages for context
     const recent = session.messages.slice(-CONFIG.contextWindow);
     for (const m of recent) {
       messages.push({ role: m.role, content: m.content });
     }
 
     // Stream the response
-    process.stdout.write(chalk.magenta.bold("AI: "));
+    const providerLabel = chalk.magenta.bold(`[${provider.id}]`);
+    process.stdout.write(`${providerLabel} ${chalk.magenta.bold("AI: ")}`);
     let fullResponse = "";
 
     try {
-      for await (const chunk of this.client.stream(messages)) {
+      for await (const chunk of provider.stream(messages)) {
         process.stdout.write(chunk);
         fullResponse += chunk;
       }
       process.stdout.write("\n\n");
 
-      // Persist the assistant response
       this.sessions.append(this.sessionId, {
         role: "assistant",
         content: fullResponse,
@@ -272,15 +280,9 @@ export class CLI {
     } catch (e) {
       const msg = (e as Error).message;
       process.stdout.write(chalk.red(`\n✗ Error: ${msg}\n\n`));
-      if (msg.includes("model") && msg.includes("not found")) {
-        console.log(chalk.gray(`Try: /pull ${this.client.model}`));
+      if (msg.includes("API key")) {
+        console.log(chalk.gray(`Set it with: /apikey ${provider.id} <key>`));
       }
     }
-  }
-
-  /** Render markdown content (used for AI responses with --md flag). */
-  private renderResponse(text: string): void {
-    const rendered = renderMarkdown(text);
-    console.log(rendered);
   }
 }
