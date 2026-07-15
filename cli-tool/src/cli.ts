@@ -77,14 +77,39 @@ export class CLI {
 
     if (!provider) {
       console.log(chalk.yellow.bold("⚠ No providers are ready yet.\n"));
-      console.log(chalk.gray("Quick setup options:\n"));
-      console.log(chalk.white("  1. ") + chalk.cyan("Use Z.ai (zero-setup cloud)") + chalk.gray(" — default, should work"));
-      console.log(chalk.white("  2. ") + chalk.cyan("Install Ollama") + chalk.gray(" — for fully local use"));
-      console.log(chalk.cyan("     curl -fsSL https://ollama.com/install.sh | sh && ollama serve"));
-      console.log(chalk.white("  3. ") + chalk.cyan("Add an API key") + chalk.gray(" — free at OpenRouter/Google/Groq"));
-      console.log(chalk.cyan("     /apikey openrouter <key>   (get one at https://openrouter.ai/keys)"));
-      console.log("");
-      console.log(chalk.gray("Type /provider to see all options, or /help for all commands.\n"));
+      console.log(chalk.gray("Pick ONE of these options to get started (all 100% free):\n"));
+
+      console.log(chalk.green.bold("  Option 1 — Groq (RECOMMENDED, ultra-fast, easy):\n"));
+      console.log(chalk.white("    1. Visit: ") + chalk.cyan("https://console.groq.com/keys"));
+      console.log(chalk.white("    2. Sign up + create a free API key (starts with gsk_)"));
+      console.log(chalk.white("    3. Run inside this CLI:"));
+      console.log(chalk.cyan("       /apikey groq gsk_your_key_here\n"));
+
+      console.log(chalk.green.bold("  Option 2 — OpenRouter (largest model selection):\n"));
+      console.log(chalk.white("    1. Visit: ") + chalk.cyan("https://openrouter.ai/keys"));
+      console.log(chalk.white("    2. Sign up + create a free API key (starts with sk-or-)"));
+      console.log(chalk.white("    3. Run inside this CLI:"));
+      console.log(chalk.cyan("       /apikey openrouter sk-or-your_key_here\n"));
+
+      console.log(chalk.green.bold("  Option 3 — Google Gemini (1M context, free tier):\n"));
+      console.log(chalk.white("    1. Visit: ") + chalk.cyan("https://aistudio.google.com/app/apikey"));
+      console.log(chalk.white("    2. Create a free API key (starts with AIza)"));
+      console.log(chalk.white("    3. Run inside this CLI:"));
+      console.log(chalk.cyan("       /apikey google AIza_your_key_here\n"));
+
+      console.log(chalk.green.bold("  Option 4 — Ollama (100% local, no internet):\n"));
+      console.log(chalk.white("    Install Ollama:"));
+      console.log(chalk.cyan("       curl -fsSL https://ollama.com/install.sh | sh"));
+      console.log(chalk.cyan("       ollama serve"));
+      console.log(chalk.white("    Then pull a model:"));
+      console.log(chalk.cyan("       ollama pull glm4:9b"));
+      console.log(chalk.white("    Then in this CLI:"));
+      console.log(chalk.cyan("       /provider ollama\n"));
+
+      console.log(chalk.gray("  💡 Tip: You can also paste your API key directly without /apikey"));
+      console.log(chalk.gray("     and I'll detect the provider automatically.\n"));
+
+      console.log(chalk.gray(`Type ${chalk.white("/help")} for all commands.\n`));
     } else {
       const category =
         provider.category === "local"
@@ -178,9 +203,70 @@ export class CLI {
     });
   }
 
+  /**
+   * Detect if the input looks like an API key, and if so, which provider it belongs to.
+   * Key prefixes:
+   *   - hf_        → HuggingFace
+   *   - sk-or-     → OpenRouter
+   *   - AIza       → Google Gemini
+   *   - gsk_       → Groq
+   *   - sk-ant-    → Anthropic (not supported, but detected for helpfulness)
+   *   - sk-        → OpenAI (not supported)
+   */
+  private detectApiKeyProvider(input: string): { id: ProviderId; name: string } | null {
+    const trimmed = input.trim();
+    // Must look like a key: no spaces, length > 20, starts with a known prefix
+    if (trimmed.includes(" ") || trimmed.length < 20) return null;
+
+    if (trimmed.startsWith("hf_")) {
+      return { id: "huggingface", name: "HuggingFace" };
+    }
+    if (trimmed.startsWith("sk-or-")) {
+      return { id: "openrouter", name: "OpenRouter" };
+    }
+    if (trimmed.startsWith("AIza")) {
+      return { id: "google", name: "Google Gemini" };
+    }
+    if (trimmed.startsWith("gsk_")) {
+      return { id: "groq", name: "Groq" };
+    }
+    return null;
+  }
+
+  /**
+   * Detect if the input is just a provider name (user trying to switch).
+   */
+  private detectProviderName(input: string): { id: ProviderId; name: string } | null {
+    const lower = input.toLowerCase().trim();
+    // Common typos and variations
+    const aliases: Record<string, ProviderId> = {
+      zai: "zai",
+      "z.ai": "zai",
+      ollama: "ollama",
+      openrouter: "openrouter",
+      "open-router": "openrouter",
+      google: "google",
+      gemini: "google",
+      "google-gemini": "google",
+      groq: "groq",
+      huggingface: "huggingface",
+      "hugging-face": "huggingface",
+      hf: "huggingface",
+      "hugfingface": "huggingface", // typo from user's screenshot
+      "hugfingFace": "huggingface", // typo
+    };
+    const id = aliases[lower];
+    if (id) {
+      const p = this.registry.get(id);
+      if (p) return { id, name: p.name };
+    }
+    return null;
+  }
+
   private async handleCommand(input: string): Promise<void> {
+    // Case-insensitive command matching: /apiKey, /APIKEY, /ApiKey all work
     const [name, ...args] = input.slice(1).split(/\s+/);
-    const cmd = findCommand(name);
+    const cmd = findCommand(name.toLowerCase());
     if (!cmd) {
       console.log(chalk.red(`Unknown command: /${name}`));
       console.log(chalk.gray("Type /help for available commands."));
@@ -229,10 +315,55 @@ export class CLI {
   private async handleChat(input: string): Promise<void> {
     const provider = this.registry.active;
 
+    // Smart detection: if the user typed just an API key (without /apikey),
+    // auto-detect the provider from the key prefix and offer to set it up.
+    const detectedProvider = this.detectApiKeyProvider(input.trim());
+    if (detectedProvider) {
+      console.log(chalk.yellow.bold(`💡 Detected ${detectedProvider.name} API key!\n`));
+      console.log(chalk.gray(`  You typed an API key directly. Use this command instead:\n`));
+      console.log(chalk.cyan(`  /apikey ${detectedProvider.id} ${input.trim()}\n`));
+      console.log(chalk.gray(`  Or I can set it for you now. Switching to ${detectedProvider.name}...\n`));
+      try {
+        this.registry.setApiKey(detectedProvider.id, input.trim());
+        const p = this.registry.get(detectedProvider.id)!;
+        const ok = await p.ping();
+        if (ok) {
+          this.registry.switch(detectedProvider.id);
+          console.log(chalk.green(`✓ ${detectedProvider.name} is now active and ready!\n`));
+          console.log(chalk.gray(`  Try typing a message now, e.g.: Hello!\n`));
+        } else {
+          console.log(chalk.red(`✗ Key was rejected: ${p.unavailableReason}\n`));
+        }
+      } catch (e) {
+        console.log(chalk.red(`✗ ${(e as Error).message}\n`));
+      }
+      return;
+    }
+
+    // Smart detection: if the user typed just a provider name (e.g. "groq"),
+    // offer to switch to it.
+    const providerMatch = this.detectProviderName(input.trim());
+    if (providerMatch) {
+      console.log(chalk.yellow.bold(`💡 Did you mean to switch providers?\n`));
+      console.log(chalk.gray(`  You typed "${input.trim()}" which looks like a provider name.\n`));
+      console.log(chalk.cyan(`  Use: /provider ${providerMatch.id}\n`));
+      return;
+    }
+
     if (!provider.available) {
       console.log(chalk.red(`✗ Active provider "${provider.name}" is not ready.`));
       console.log(chalk.gray(`  ${provider.unavailableReason ?? "Unknown reason"}`));
-      console.log(chalk.gray(`  Switch with: /provider`));
+      console.log("");
+      console.log(chalk.yellow(`Quick fix — pick one of these:\n`));
+      // Find first available provider
+      const available = this.registry.list().filter((p) => p.available);
+      if (available.length > 0) {
+        console.log(chalk.green(`  ✓ Available now: /provider ${available[0].id}`));
+      }
+      console.log(chalk.cyan(`  Set a free API key: /apikey groq gsk_xxxxxxxx`));
+      console.log(chalk.gray(`    Get free key: https://console.groq.com/keys`));
+      console.log(chalk.cyan(`  Or use Ollama locally: /provider ollama`));
+      console.log("");
       return;
     }
 

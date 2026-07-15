@@ -68,14 +68,24 @@ export class ProviderRegistry {
 
   /**
    * Find the first available provider, in priority order:
-   *   1. Z.ai (zero-setup cloud)
-   *   2. Ollama (local)
-   *   3. OpenRouter / Google / HuggingFace / Groq (API key required)
+   *   1. Ollama (local — if installed, always preferred for privacy)
+   *   2. Z.ai (cloud SDK — works only if .z-ai-config exists)
+   *   3. Groq (cloud API — if GROQ_API_KEY is set)
+   *   4. OpenRouter (cloud API — if OPENROUTER_API_KEY is set)
+   *   5. Google (cloud API — if GOOGLE_API_KEY is set)
+   *   6. HuggingFace (cloud API — if HUGGINGFACE_API_KEY is set)
    *
    * Used on first run to auto-select a working provider.
    */
   async findFirstAvailable(): Promise<Provider | null> {
-    const priority: ProviderId[] = ["zai", "ollama", "groq", "google", "openrouter", "huggingface"];
+    const priority: ProviderId[] = [
+      "ollama",
+      "zai",
+      "groq",
+      "openrouter",
+      "google",
+      "huggingface",
+    ];
     for (const id of priority) {
       const p = this.providers.get(id)!;
       if (await p.ping()) {
