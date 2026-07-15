@@ -1,3 +1,37 @@
-skills/
+# Dependencies
 node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+*.tsbuildinfo
+
+# Environment files (sensitive)
 .env
+.env.local
+.env.*.local
+**/.env
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Editor files
+.vscode/
+.idea/
+*.sublime-*
+.vs/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Internal non-project folders (not part of Free CLI)
+skills/
+upload/
+download/
