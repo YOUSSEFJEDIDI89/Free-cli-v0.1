@@ -7,7 +7,9 @@
  */
 
 export type ProviderId =
+  | "pollinations"
   | "ollama"
+  | "local-models"
   | "zai"
   | "openrouter"
   | "google"

@@ -59,20 +59,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Detect Termux environment (Android terminal)
+IS_TERMUX=false
+if [ -n "$TERMUX_VERSION" ] || [ -d "/data/data/com.termux" ] || echo "$PREFIX" | grep -q "com.termux"; then
+    IS_TERMUX=true
+    echo -e "${YELLOW}📱 Detected Termux (Android). Using Termux-compatible setup.${NC}"
+fi
+
 # Step 1: Check Node.js
 echo -e "${CYAN}[1/5]${NC} Checking Node.js..."
 if ! command -v node &> /dev/null; then
     echo -e "${RED}✗ Node.js is not installed.${NC}"
-    echo "  Please install Node.js 18+ from https://nodejs.org"
-    echo ""
-    echo -e "  ${CYAN}Quick install via nvm:${NC}"
-    echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash"
-    echo "  source ~/.bashrc && nvm install 20"
+    if [ "$IS_TERMUX" = true ]; then
+        echo -e "  ${CYAN}Install in Termux:${NC}"
+        echo "  pkg install nodejs"
+    else
+        echo "  Please install Node.js 18+ from https://nodejs.org"
+        echo ""
+        echo -e "  ${CYAN}Quick install via nvm:${NC}"
+        echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash"
+        echo "  source ~/.bashrc && nvm install 20"
+    fi
     exit 1
 fi
 NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
 if [ "$NODE_VERSION" -lt 18 ]; then
     echo -e "${RED}✗ Node.js 18+ required (found $(node -v)).${NC}"
+    if [ "$IS_TERMUX" = true ]; then
+        echo -e "  ${CYAN}Update in Termux:${NC}"
+        echo "  pkg upgrade nodejs"
+    fi
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Node.js $(node -v) detected"
@@ -157,29 +173,38 @@ echo ""
 echo -e "  ${CYAN}Run Free CLI:${NC}"
 echo -e "     ${GREEN}$BINARY${NC}"
 echo ""
-echo -e "  ${CYAN}Quick start — pick ONE option (all 100% free):${NC}"
+echo -e "  ${GREEN}✨ IT JUST WORKS! No setup needed.${NC}"
+echo -e "     The CLI auto-uses Pollinations.ai (free cloud, no API key)."
+echo -e "     Start typing immediately."
 echo ""
-echo -e "  ${YELLOW}Option A — Groq (RECOMMENDED, ultra-fast 500+ tok/s):${NC}"
-echo -e "     1. Get free key: ${CYAN}https://console.groq.com/keys${NC}"
-echo -e "     2. Run: ${GREEN}$BINARY${NC}"
-echo -e "     3. Inside the CLI, type:"
-echo -e "        ${CYAN}/apikey groq gsk_your_key_here${NC}"
-echo -e "        (or just paste the key — auto-detected!)"
+echo -e "  ${CYAN}Want more power? Optional setup:${NC}"
 echo ""
-echo -e "  ${YELLOW}Option B — Ollama (100% local, no internet):${NC}"
-echo -e "     ${CYAN}ollama serve${NC}  (start daemon)"
-echo -e "     ${CYAN}ollama pull glm4:9b${NC}  (download model, ~5.5 GB)"
-echo -e "     ${GREEN}$BINARY${NC}  (then type: ${CYAN}/provider ollama${NC})"
+echo -e "  ${YELLOW}A. Use a local model file (.gguf, .safetensors, .onnx):${NC}"
+echo -e "     Just put the file in this folder, then:"
+echo -e "     ${CYAN}/provider local-models${NC}"
+echo -e "     The CLI auto-detects it!"
 echo ""
-echo -e "  ${YELLOW}Option C — Other free cloud providers:${NC}"
-echo -e "     OpenRouter: ${CYAN}https://openrouter.ai/keys${NC} (Llama 3.3 70B)"
-echo -e "     Google:     ${CYAN}https://aistudio.google.com/app/apikey${NC} (Gemini 1M ctx)"
-echo -e "     HuggingFace:${CYAN}https://huggingface.co/settings/tokens${NC}"
+echo -e "  ${YELLOW}B. Ollama (more local models, 100% offline):${NC}"
+if [ "$IS_TERMUX" = true ]; then
+    echo -e "     ${YELLOW}⚠ Ollama doesn't run natively on Termux.${NC}"
+    echo -e "     Use proot-distro: ${CYAN}pkg install proot-distro${NC}"
+    echo -e "     Then: ${CYAN}proot-distro install debian${NC} and install Ollama inside."
+else
+    echo -e "     ${CYAN}ollama serve${NC}  (start daemon)"
+    echo -e "     ${CYAN}ollama pull glm4:9b${NC}  (download model)"
+    echo -e "     Then in CLI: ${CYAN}/provider ollama${NC}"
+fi
+echo ""
+echo -e "  ${YELLOW}C. Free cloud API keys (faster, more models):${NC}"
+echo -e "     Groq (500+ tok/s): ${CYAN}https://console.groq.com/keys${NC}"
+echo -e "     OpenRouter:        ${CYAN}https://openrouter.ai/keys${NC}"
+echo -e "     Google Gemini:     ${CYAN}https://aistudio.google.com/app/apikey${NC}"
+echo -e "     Then in CLI: ${CYAN}/apikey groq gsk_yourkey${NC}"
+echo -e "     (or just paste the key — auto-detected!)"
 echo ""
 echo -e "  ${CYAN}Inside the CLI:${NC}"
 echo -e "    /help         Show all commands"
 echo -e "    /provider     List/switch providers"
 echo -e "    /model        List/switch models"
-echo -e "    /apikey       Set API key for a provider"
-echo -e "    (or just paste your API key — auto-detected!)"
+echo -e "    Just type     Chat with AI (no command needed)"
 echo ""

@@ -1,4 +1,5 @@
 import readline from "node:readline";
+import { existsSync } from "node:fs";
 import chalk from "chalk";
 import { OllamaClient } from "./ollama.js";
 import { SessionStore, type ChatMessage } from "./session.js";
@@ -10,16 +11,33 @@ import { ProviderRegistry, registry as defaultRegistry } from "./providers/regis
 import type { Provider, ProviderId } from "./providers/types.js";
 import { OllamaProvider } from "./providers/ollama.js";
 
-const BANNER = `
+/**
+ * Detect if we're running in Termux (Android terminal emulator).
+ * Termux has limitations:
+ *   - No arrow-key history (use /history command instead)
+ *   - No tab completion in some shells
+ *   - Limited color support on some devices
+ *   - No native Ollama (would need proot/chroot)
+ */
+const IS_TERMUX =
+  !!process.env.TERMUX_VERSION ||
+  !!process.env.PREFIX?.includes("/com.termux/") ||
+  existsSync("/data/data/com.termux/");
+
+// Simpler banner for Termux (smaller, less likely to break)
+const BANNER = IS_TERMUX
+  ? `\n${chalk.cyan.bold("Free CLI")} ${chalk.gray("v2.1.0")}\n${chalk.gray("Type /help for commands, just type to chat.\n")}`
+  : `
   ${chalk.magenta.bold("███████╗███████╗")}
   ${chalk.magenta.bold("██╔════╝██╔════╝")}
-  ${chalk.magenta.bold("█████╗  ███████╗")}   ${chalk.cyan("Free CLI")} ${chalk.gray("v2.0.0")}
-  ${chalk.magenta.bold("██╔══╝  ╚════██║")}   ${chalk.gray("Multi-provider • Z.ai + Ollama + OpenRouter + Gemini + Groq")}
-  ${chalk.magenta.bold("███████╗███████║")}   ${chalk.gray("100% free • zero-setup cloud or local")}
+  ${chalk.magenta.bold("█████╗  ███████╗")}   ${chalk.cyan("Free CLI")} ${chalk.gray("v2.1.0")}
+  ${chalk.magenta.bold("██╔══╝  ╚════██║")}   ${chalk.gray("Pollinations + Ollama + Local files + Groq + more")}
+  ${chalk.magenta.bold("███████╗███████║")}   ${chalk.gray("100% free • zero-setup • just works")}
   ${chalk.magenta.bold("╚══════╝╚══════╝")}
 `;
 
-const PROMPT = chalk.cyan("❯ ");
+// In Termux, use a simpler prompt without special chars that might break
+const PROMPT = IS_TERMUX ? chalk.cyan("> ") : chalk.cyan("❯ ");
 
 export class CLI {
   private rl!: readline.Interface;
@@ -51,65 +69,51 @@ export class CLI {
 
   /** Create the readline interface and register handlers. */
   private initReadline(): void {
+    // In Termux, disable tab completion and history (they often don't work)
+    // and use a non-terminal readline mode that's more compatible.
+    const useTerminal = process.stdin.isTTY && !IS_TERMUX;
+
     this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
       prompt: PROMPT,
-      completer: this.completer,
-      terminal: process.stdin.isTTY,
+      completer: useTerminal ? this.completer : undefined,
+      terminal: useTerminal,
+      history: useTerminal ? undefined : [],
+      removeHistoryDuplicates: true,
     });
 
-    this.rl.on("history", (line: string) => {
-      const typed = String(line);
-      if (typed.trim()) {
-        this.history.push(typed);
-        if (this.history.length > 200) this.history.shift();
-      }
-    });
+    // Only track history manually in non-Termux (Termux arrow keys are unreliable)
+    if (useTerminal) {
+      this.rl.on("history", (line: string) => {
+        const typed = String(line);
+        if (typed.trim()) {
+          this.history.push(typed);
+          if (this.history.length > 200) this.history.shift();
+        }
+      });
+    }
   }
 
   async start(): Promise<void> {
     console.log(BANNER);
 
-    // Auto-detect first available provider (Z.ai first, then Ollama, etc.)
+    if (IS_TERMUX) {
+      console.log(chalk.gray(`Detected: Termux on Android. Simplified UI active.\n`));
+    }
+
+    // Auto-detect first available provider
     console.log(chalk.gray("Detecting available providers...\n"));
     const provider = await this.registry.findFirstAvailable();
 
     if (!provider) {
-      console.log(chalk.yellow.bold("⚠ No providers are ready yet.\n"));
-      console.log(chalk.gray("Pick ONE of these options to get started (all 100% free):\n"));
-
-      console.log(chalk.green.bold("  Option 1 — Groq (RECOMMENDED, ultra-fast, easy):\n"));
-      console.log(chalk.white("    1. Visit: ") + chalk.cyan("https://console.groq.com/keys"));
-      console.log(chalk.white("    2. Sign up + create a free API key (starts with gsk_)"));
-      console.log(chalk.white("    3. Run inside this CLI:"));
-      console.log(chalk.cyan("       /apikey groq gsk_your_key_here\n"));
-
-      console.log(chalk.green.bold("  Option 2 — OpenRouter (largest model selection):\n"));
-      console.log(chalk.white("    1. Visit: ") + chalk.cyan("https://openrouter.ai/keys"));
-      console.log(chalk.white("    2. Sign up + create a free API key (starts with sk-or-)"));
-      console.log(chalk.white("    3. Run inside this CLI:"));
-      console.log(chalk.cyan("       /apikey openrouter sk-or-your_key_here\n"));
-
-      console.log(chalk.green.bold("  Option 3 — Google Gemini (1M context, free tier):\n"));
-      console.log(chalk.white("    1. Visit: ") + chalk.cyan("https://aistudio.google.com/app/apikey"));
-      console.log(chalk.white("    2. Create a free API key (starts with AIza)"));
-      console.log(chalk.white("    3. Run inside this CLI:"));
-      console.log(chalk.cyan("       /apikey google AIza_your_key_here\n"));
-
-      console.log(chalk.green.bold("  Option 4 — Ollama (100% local, no internet):\n"));
-      console.log(chalk.white("    Install Ollama:"));
-      console.log(chalk.cyan("       curl -fsSL https://ollama.com/install.sh | sh"));
-      console.log(chalk.cyan("       ollama serve"));
-      console.log(chalk.white("    Then pull a model:"));
-      console.log(chalk.cyan("       ollama pull glm4:9b"));
-      console.log(chalk.white("    Then in this CLI:"));
-      console.log(chalk.cyan("       /provider ollama\n"));
-
-      console.log(chalk.gray("  💡 Tip: You can also paste your API key directly without /apikey"));
-      console.log(chalk.gray("     and I'll detect the provider automatically.\n"));
-
-      console.log(chalk.gray(`Type ${chalk.white("/help")} for all commands.\n`));
+      console.log(chalk.yellow.bold("⚠ No providers are ready.\n"));
+      console.log(chalk.gray("This shouldn't happen — Pollinations.ai works without any setup.\n"));
+      console.log(chalk.gray("Check your internet connection, then try again.\n"));
+      console.log(chalk.gray("Or set up a cloud API key:\n"));
+      console.log(chalk.cyan("  /apikey groq gsk_xxxxxxxx   (free: https://console.groq.com/keys)"));
+      console.log(chalk.cyan("  /apikey openrouter sk-or-x  (free: https://openrouter.ai/keys)"));
+      console.log("");
     } else {
       const category =
         provider.category === "local"

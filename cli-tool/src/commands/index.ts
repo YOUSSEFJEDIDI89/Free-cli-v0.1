@@ -61,6 +61,13 @@ export const commands: SlashCommand[] = [
       if (args.length === 0) {
         console.log(chalk.cyan.bold("\n🔌 AI Providers\n"));
         const providers = ctx.registry.list();
+
+        // For local-models, refresh scan to show current count
+        const localModels = providers.find((p) => p.id === "local-models") as any;
+        if (localModels && typeof localModels.scan === "function") {
+          localModels.scan();
+        }
+
         for (const p of providers) {
           const isActive = p.id === ctx.getActiveProvider().id;
           const marker = isActive ? chalk.green("→ ") : "  ";
@@ -83,18 +90,19 @@ export const commands: SlashCommand[] = [
           }
           console.log(
             chalk.gray(
-              `      Models: ${p.models.length} • Default: ${p.defaultModel}`,
+              `      Models: ${p.models.length} • Default: ${p.defaultModel || "—"}`,
             ),
           );
         }
         console.log(chalk.gray("\nSwitch with:  /provider <id>   (e.g. /provider zai)"));
-        console.log(chalk.gray("Set API key:  /apikey <provider> <key>\n"));
+        console.log(chalk.gray("Set API key:  /apikey <provider> <key>"));
+        console.log(chalk.gray("For local files: just put .gguf/.safetensors/.onnx in this folder.\n"));
         return;
       }
 
       // Switch mode
       const id = args[0] as ProviderId;
-      const validIds: ProviderId[] = ["zai", "ollama", "openrouter", "google", "huggingface", "groq"];
+      const validIds: ProviderId[] = ["pollinations", "ollama", "local-models", "zai", "openrouter", "google", "huggingface", "groq"];
       if (!validIds.includes(id)) {
         console.log(chalk.red(`Unknown provider: ${id}`));
         console.log(chalk.gray(`Valid: ${validIds.join(", ")}`));

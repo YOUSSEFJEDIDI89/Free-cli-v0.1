@@ -1,5 +1,7 @@
 import type { Provider, ProviderId } from "./types.js";
+import { PollinationsProvider } from "./pollinations.js";
 import { OllamaProvider } from "./ollama.js";
+import { LocalModelsProvider } from "./local-models.js";
 import { ZaiProvider } from "./zai.js";
 import { OpenRouterProvider } from "./openrouter.js";
 import { GoogleProvider } from "./google.js";
@@ -19,17 +21,18 @@ export class ProviderRegistry {
   private activeId: ProviderId;
 
   constructor() {
-    // Create instances in priority order. Z.ai is the default because it
-    // requires zero setup (no API key, no download). Ollama is next-best
-    // because it's fully local. The rest are opt-in with API keys.
-    this.providers.set("zai", new ZaiProvider());
+    // Pollinations is the default because it's TRULY zero-setup:
+    // no API key, no .z-ai-config file, no model download. Just works.
+    this.providers.set("pollinations", new PollinationsProvider());
     this.providers.set("ollama", new OllamaProvider());
+    this.providers.set("local-models", new LocalModelsProvider());
+    this.providers.set("zai", new ZaiProvider());
+    this.providers.set("groq", new GroqProvider());
     this.providers.set("openrouter", new OpenRouterProvider());
     this.providers.set("google", new GoogleProvider());
     this.providers.set("huggingface", new HuggingFaceProvider());
-    this.providers.set("groq", new GroqProvider());
 
-    this.activeId = "zai";
+    this.activeId = "pollinations";
   }
 
   /** Get the currently active provider. */
@@ -68,17 +71,17 @@ export class ProviderRegistry {
 
   /**
    * Find the first available provider, in priority order:
-   *   1. Ollama (local — if installed, always preferred for privacy)
-   *   2. Z.ai (cloud SDK — works only if .z-ai-config exists)
-   *   3. Groq (cloud API — if GROQ_API_KEY is set)
-   *   4. OpenRouter (cloud API — if OPENROUTER_API_KEY is set)
-   *   5. Google (cloud API — if GOOGLE_API_KEY is set)
-   *   6. HuggingFace (cloud API — if HUGGINGFACE_API_KEY is set)
+   *   1. Pollinations (zero-setup cloud — always works if internet is available)
+   *   2. Ollama (local — if installed, preferred for privacy)
+   *   3. Z.ai (cloud SDK — works only in Z.ai sandbox)
+   *   4. Groq (cloud API — if GROQ_API_KEY is set)
+   *   5. OpenRouter / Google / HuggingFace (cloud API — if key is set)
    *
    * Used on first run to auto-select a working provider.
    */
   async findFirstAvailable(): Promise<Provider | null> {
     const priority: ProviderId[] = [
+      "pollinations",
       "ollama",
       "zai",
       "groq",
